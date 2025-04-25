@@ -1,0 +1,36 @@
+# Rust 相关
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Vue 客户端相关
+/vue-client/node_modules
+/vue-client/dist
+/vue-client/.cache
+/vue-client/.env
+/vue-client/.env.local
+/vue-client/.env.*.local
+/vue-client/npm-debug.log*
+/vue-client/yarn-debug.log*
+/vue-client/yarn-error.log*
+
+# IDE 相关
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.vs/
+*.code-workspace
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.log
+*.tmp
+*.bak
+*.swp
+.temp
+.tmp
