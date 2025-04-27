@@ -449,15 +449,29 @@ async fn handle_disconnect(user_id: &str, app_state: &Arc<AppState>) {
 
 // 向指定房间广播消息
 async fn broadcast_message_to_room(message: &ChatMessage, room: &str, app_state: &Arc<AppState>) {
-    log::debug!("Broadcasting to room {}: {:?}", room, message);
+    log::info!("Broadcasting to room {}: type={}, from={}, text={}", 
+               room, message.msg_type, message.username, 
+               if message.text.len() > 30 { format!("{}...", &message.text[..30]) } else { message.text.clone() });
     
     let user_ids = {
         let rooms = app_state.rooms.lock().unwrap();
         match rooms.get(room) {
-            Some(user_set) => user_set.clone(),
-            None => return,
+            Some(user_set) => {
+                let users = user_set.clone();
+                log::info!("Room {} has {} users: {:?}", room, users.len(), &users);
+                users
+            },
+            None => {
+                log::warn!("Trying to broadcast to non-existent room: {}", room);
+                return;
+            }
         }
     };
+    
+    if user_ids.is_empty() {
+        log::warn!("No users in room {}, message not delivered", room);
+        return;
+    }
     
     let message_json = match serde_json::to_string(message) {
         Ok(json) => json,
@@ -470,9 +484,14 @@ async fn broadcast_message_to_room(message: &ChatMessage, room: &str, app_state:
     let mut sessions = app_state.sessions.lock().unwrap();
     for user_id in user_ids {
         if let Some(user_session) = sessions.get_mut(&user_id) {
+            log::debug!("Sending to user {} in room {}: {:?}", user_session.username, room, message);
             if let Err(e) = user_session.session.text(message_json.clone()).await {
                 log::error!("Error sending message to {}: {:?}", user_id, e);
+            } else {
+                log::debug!("Message sent successfully to user {}", user_session.username);
             }
+        } else {
+            log::warn!("User {} not found in sessions", user_id);
         }
     }
 }
@@ -574,19 +593,21 @@ async fn handle_command(command: String, user_id: &str, app_state: &Arc<AppState
             return format!("当前房间有 {} 名用户:\n{}", user_count, user_list.join("\n"));
         },
         "/ping" => {
-            let start_time = Instant::now();
+            // 直接发送ping消息，而不是返回文本
             let ping_msg = ChatMessage {
                 msg_type: "ping".to_string(),
                 username: "服务器".to_string(),
                 room: "".to_string(),
-                text: start_time.elapsed().as_micros().to_string(),
+                text: chrono::Utc::now().timestamp_micros().to_string(),
                 timestamp: chrono::Utc::now().timestamp() as u64,
                 id: Uuid::new_v4().to_string(),
                 target: None,
             };
             
             send_message_to_user(&ping_msg, user_id, app_state).await;
-            return "测量中...".to_string();
+            
+            // 返回空字符串，因为ping消息已经直接发送
+            return "".to_string();
         },
         "/stats" => {
             return format!(
@@ -603,7 +624,8 @@ async fn handle_command(command: String, user_id: &str, app_state: &Arc<AppState
 
 // 静态文件路由
 async fn index() -> actix_web::Result<fs::NamedFile> {
-    Ok(fs::NamedFile::open("static/index.html")?)
+    // 修改为使用Vue构建的index.html文件
+    Ok(fs::NamedFile::open("vue-client/dist/index.html")?)
 }
 
 #[actix_web::main]
@@ -626,8 +648,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_state.clone())
             .wrap(middleware::Logger::default())
             .service(web::resource("/ws").route(web::get().to(ws_route)))
-            .service(web::resource("/").route(web::get().to(index)))
-            .service(fs::Files::new("/static", "static"))
+            // Use only one handler for the root path
+            .service(fs::Files::new("/", "vue-client/dist").index_file("index.html"))
     })
     .bind("0.0.0.0:8080")?  // 监听所有接口，方便局域网内访问
     .run()

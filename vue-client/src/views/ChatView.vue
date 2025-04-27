@@ -32,6 +32,9 @@
       :received-count="receivedCount"
       :average-latency="averageLatency"
       :network-log="networkLog"
+      :ws-connection-status="connectionStatus"
+      @manual-connect="manualConnect"
+      @clear-logs="clearLogs"
     />
   </div>
 </template>
@@ -73,45 +76,131 @@ export default {
     let totalLatency = 0
     let messageIdMap = new Map()
     let messagesQueue = []
+    let connectionAttempts = 0
+    let maxConnectionAttempts = 5
+    let reconnectTimeout = null
+    
+    // 检测是否是移动设备
+    const isMobileDevice = () => {
+      return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    }
     
     // 连接WebSocket服务器
     const connect = () => {
-      updateConnectionStatus('正在连接...', 'orange')
-      logNetwork('连接', `正在连接到服务器...`, 'info')
+      // 清除可能存在的重连定时器
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout)
+        reconnectTimeout = null
+      }
+      
+      // 如果已经有连接，先关闭
+      if (socket && socket.readyState !== WebSocket.CLOSED) {
+        try {
+          socket.close()
+        } catch(e) {
+          console.error("关闭现有连接出错:", e)
+        }
+      }
+      
+      connectionAttempts++
+      updateConnectionStatus('正在连接...')
       
       // 检查当前协议是http还是https
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${protocol}//${window.location.host}/ws`
       
-      socket = new WebSocket(wsUrl)
+      // 获取当前主机地址
+      const host = window.location.host
+      let wsUrl
       
-      socket.onopen = () => {
-        updateConnectionStatus('已连接', 'green')
+      // 针对移动设备使用IP直连方式
+      if (isMobileDevice()) {
+        // 在移动设备上使用硬编码的IP地址
+        wsUrl = `${protocol}//172.20.10.3:8080/ws`
+        console.log('移动设备检测: 使用固定IP连接', wsUrl)
+      } else {
+        // 在桌面设备上使用相对路径
+        wsUrl = `${protocol}//${host}/ws`
+        console.log('桌面设备: 使用当前主机连接', wsUrl)
+      }
+      
+      try {
+        socket = new WebSocket(wsUrl)
+        
+        socket.onopen = handleSocketOpen
+        
+        socket.onmessage = handleMessage
+        
+        socket.onclose = handleSocketClose
+        
+        socket.onerror = handleSocketError
+        
+        // 设置连接超时
+        setTimeout(() => {
+          if (socket && socket.readyState === WebSocket.CONNECTING) {
+            console.log('连接超时，正在关闭')
+            socket.close()
+          }
+        }, 10000) // 10秒超时
+        
+      } catch (e) {
+        console.error("创建WebSocket连接出错:", e)
+        updateConnectionStatus('连接失败')
+      }
+    }
+    
+    // 手动触发连接
+    const manualConnect = () => {
+      connectionAttempts = 0
+      console.log('手动触发连接')
+      connect()
+    }
+    
+    // 清除日志
+    const clearLogs = () => {
+      networkLog.value = []
+      console.log('日志已清除')
+    }
+    
+    // 处理Socket打开事件
+    const handleSocketOpen = () => {
+      connectionAttempts = 0
+      updateConnectionStatus('已连接')
+      
+      if (isMobileDevice()) {
+        serverAddress.value = '172.20.10.3:8080'
+      } else {
         serverAddress.value = window.location.host
-        logNetwork('连接', '连接已建立', 'info')
-        
-        // 发送初始消息以设置用户名
-        sendChatMessage('chat', username.value, currentRoom.value, '')
-        
-        // 添加系统消息
-        displaySystemMessage('已成功连接到服务器')
       }
       
-      socket.onmessage = handleMessage
+      logNetwork('连接', '连接已建立', 'info')
       
-      socket.onclose = (event) => {
-        updateConnectionStatus('已断开', 'red')
-        logNetwork('断开', `连接已关闭: ${event.code} ${event.reason}`, 'error')
+      // 发送初始消息以设置用户名
+      sendChatMessage('chat', username.value, currentRoom.value, '')
+      
+      // 添加系统消息
+      displaySystemMessage('已成功连接到服务器')
+    }
+    
+    // 处理Socket关闭事件
+    const handleSocketClose = (event) => {
+      updateConnectionStatus('已断开')
+      console.log('WebSocket连接关闭:', event.code)
+      
+      // 如果不是手动关闭，尝试重连
+      if (connectionAttempts < maxConnectionAttempts) {
+        const delay = Math.min(5000 * Math.pow(1.5, connectionAttempts - 1), 30000)
+        console.log(`将在${Math.round(delay/1000)}秒后尝试重连(尝试${connectionAttempts}/${maxConnectionAttempts})`)
         
-        // 5秒后重连
-        setTimeout(connect, 5000)
+        reconnectTimeout = setTimeout(connect, delay)
+      } else {
+        console.log(`已达到最大重连次数(${maxConnectionAttempts})，请手动重连`)
       }
-      
-      socket.onerror = (error) => {
-        updateConnectionStatus('连接错误', 'red')
-        logNetwork('错误', '连接错误', 'error')
-        console.error('WebSocket错误:', error)
-      }
+    }
+    
+    // 处理Socket错误事件
+    const handleSocketError = (error) => {
+      updateConnectionStatus('连接错误')
+      console.error('WebSocket错误:', error)
     }
     
     // 处理接收到的消息
@@ -122,9 +211,17 @@ export default {
         const message = JSON.parse(event.data)
         logNetwork('接收', `${message.msg_type}: ${message.text ? (message.text.substring(0, 30) + (message.text.length > 30 ? '...' : '')) : '空消息'}`, 'received')
         
-        // 调试输出
-        console.log('收到消息:', message)
+        // 移动设备上增加额外日志
+        if (isMobileDevice()) {
+          console.log('移动设备接收消息:', message)
+        }
         
+        // 确认消息收到，将消息ID从待确认队列中移除
+        if (message.id && messageIdMap.has(message.id)) {
+          messageIdMap.delete(message.id)
+        }
+        
+        // 处理不同类型的消息
         switch (message.msg_type) {
           case 'chat':
             // 确保文本不为空才显示消息
@@ -148,7 +245,6 @@ export default {
           case 'private':
             // 处理私聊消息
             if (!currentPrivateTarget.value && message.username !== username.value) {
-              // 如果不在私聊模式且收到对方发来的消息，自动进入私聊模式
               startPrivateChat(message.username)
             }
             
@@ -162,12 +258,14 @@ export default {
             break
             
           case 'userlist':
-            updateUserList(message.text)
+            if (message.text) {
+              updateUserList(message.text)
+            }
             break
             
           case 'ping':
-            // 接收到服务器ping，回复pong
-            sendChatMessage('pong', username.value, currentRoom.value, message.text)
+            // 接收到服务器ping，立即回复pong
+            sendChatMessage('pong', username.value, currentRoom.value, message.text || Date.now().toString())
             
             // 如果是我们的ping请求，计算延迟
             if (pingStartTime > 0) {
@@ -197,47 +295,48 @@ export default {
               pingStartTime = 0
             }
             break
+            
+          default:
+            console.warn('未知消息类型:', message.msg_type, message)
         }
         
       } catch (e) {
         console.error('无法解析消息:', e, event.data)
         logNetwork('错误', '消息解析失败: ' + e.message, 'error')
+        
+        // 显示原始消息以便调试
+        if (typeof event.data === 'string') {
+          logNetwork('调试', `原始消息内容: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`, 'error')
+        }
       }
     }
     
-    // 更新用户列表
-    const updateUserList = (userListText) => {
-      const userArray = userListText.split(',')
-      users.value = userArray.filter(Boolean).map(userInfo => {
-        const [username, address] = userInfo.split(':')
-        return {
-          username,
-          address: address || '',
-          isSelf: username === username.value
-        }
-      })
+    // 更新连接状态
+    const updateConnectionStatus = (status) => {
+      connectionStatus.value = status
     }
     
-    // 更新房间列表
-    const updateRooms = (roomName, isActive = false) => {
-      const existingRoom = rooms.value.find(r => r.name === roomName)
+    // 发送ping请求测试延迟
+    const sendPing = () => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        displaySystemMessage('未连接到服务器，无法发送ping')
+        return
+      }
       
-      if (existingRoom) {
-        // 如果房间已存在，只更新active状态
-        if (isActive) {
-          rooms.value.forEach(r => r.active = (r.name === roomName))
-        }
-      } else {
-        // 如果是新房间，添加到列表
-        rooms.value.push({ name: roomName, active: isActive })
-      }
+      pingStartTime = Date.now()
+      // 直接使用ping类型，而不是使用command发送/ping
+      sendChatMessage('ping', username.value, currentRoom.value, Date.now().toString())
+      networkLatency.value = '测量中...'
+      logNetwork('ping', '发送ping请求', 'sent')
     }
     
     // 发送消息基础函数
     const sendChatMessage = (type, username, room, text, target = null) => {
       if (!socket || socket.readyState !== WebSocket.OPEN) {
-        displaySystemMessage('未连接到服务器，无法发送消息')
-        return
+        if (type !== 'pong') { // 不要为pong消息显示错误
+          displaySystemMessage('未连接到服务器，无法发送消息')
+        }
+        return false
       }
       
       const messageId = generateId()
@@ -252,8 +351,13 @@ export default {
       }
       
       try {
-        socket.send(JSON.stringify(message))
+        const msgJson = JSON.stringify(message)
+        socket.send(msgJson)
         sentCount.value++
+        
+        if (type !== 'ping' && type !== 'pong') {
+          logNetwork('发送', `${type}: ${text.substring(0, 30)}${text.length > 30 ? '...' : ''}`, 'sent')
+        }
         
         if ((type === 'chat' || type === 'private') && text) {
           messageIdMap.set(messageId, message)
@@ -267,84 +371,30 @@ export default {
           }, 60000)
         }
         
-        logNetwork('发送', `${type}: ${text.substring(0, 30)}${text.length > 30 ? '...' : ''}`, 'sent')
+        return true
       } catch (e) {
         console.error('发送消息失败:', e)
         logNetwork('错误', '发送失败: ' + e.message, 'error')
+        return false
       }
     }
     
-    // 发送消息
-    const sendMessage = (text) => {
-      if (!text) return
+    // 日志网络事件到网络监视器
+    const logNetwork = (type, message, className) => {
+      networkLog.value.push({
+        time: new Date().toLocaleTimeString(),
+        type: type,
+        message: message,
+        className: className
+      })
       
-      // 添加本地显示
-      if (!text.startsWith('/')) {
-        // 如果是普通消息，先在本地显示，提高响应速度感
-        if (currentPrivateTarget.value) {
-          displayPrivateMessage(username.value, text, true, Date.now(), currentPrivateTarget.value)
-        } else {
-          displayMessage(username.value, text, true, Date.now())
-        }
+      // 限制日志条目数量
+      if (networkLog.value.length > 100) {
+        networkLog.value.shift()
       }
       
-      // 调试输出
-      console.log('发送消息:', text)
-      
-      // 检查是否为命令
-      if (text.startsWith('/')) {
-        if (text === '/help') {
-          // 客户端处理help命令
-          displaySystemMessage(`可用命令:
-          /help - 显示帮助
-          /rooms - 显示所有房间
-          /join <房间名> - 加入指定房间
-          /users - 显示当前房间用户
-          /msg <用户名> <消息> - 发送私聊消息
-          /ping - 测试网络连接
-          /stats - 显示网络统计信息`)
-        } else if (text.startsWith('/join ')) {
-          // 解析房间名
-          const roomName = text.substring(6).trim()
-          if (roomName) {
-            joinRoom(roomName)
-          }
-        } else if (text.startsWith('/msg ')) {
-          // 解析私聊消息
-          const parts = text.split(' ')
-          if (parts.length >= 3) {
-            const targetUser = parts[1]
-            const msgText = parts.slice(2).join(' ')
-            sendPrivateMessage(targetUser, msgText)
-          } else {
-            displaySystemMessage('用法: /msg <用户名> <消息内容>')
-          }
-        } else {
-          // 其他命令发送到服务器处理
-          sendChatMessage('command', username.value, currentRoom.value, text)
-        }
-      } else {
-        // 普通消息
-        if (currentPrivateTarget.value) {
-          // 在私聊模式
-          sendPrivateMessage(currentPrivateTarget.value, text)
-        } else {
-          // 房间消息
-          sendChatMessage('chat', username.value, currentRoom.value, text)
-        }
-      }
-    }
-    
-    // 发送私聊消息
-    const sendPrivateMessage = (targetUser, text) => {
-      sendChatMessage('private', username.value, '私聊', text, targetUser)
-    }
-    
-    // 发送ping请求测试延迟
-    const sendPing = () => {
-      pingStartTime = Date.now()
-      sendChatMessage('command', username.value, currentRoom.value, '/ping')
-      networkLatency.value = '测量中...'
+      // 打印到控制台，便于调试
+      console.log(`[${type}] ${message}`)
     }
     
     // 加入房间
@@ -441,23 +491,31 @@ export default {
       }
     }
     
-    // 更新连接状态
-    const updateConnectionStatus = (status) => {
-      connectionStatus.value = status
+    // 更新用户列表
+    const updateUserList = (userListText) => {
+      const userArray = userListText.split(',')
+      users.value = userArray.filter(Boolean).map(userInfo => {
+        const [username, address] = userInfo.split(':')
+        return {
+          username,
+          address: address || '',
+          isSelf: username === username.value
+        }
+      })
     }
     
-    // 日志网络事件到网络监视器
-    const logNetwork = (type, message, className) => {
-      networkLog.value.push({
-        time: new Date().toLocaleTimeString(),
-        type: type,
-        message: message,
-        className: className
-      })
+    // 更新房间列表
+    const updateRooms = (roomName, isActive = false) => {
+      const existingRoom = rooms.value.find(r => r.name === roomName)
       
-      // 限制日志条目数量
-      if (networkLog.value.length > 100) {
-        networkLog.value.shift()
+      if (existingRoom) {
+        // 如果房间已存在，只更新active状态
+        if (isActive) {
+          rooms.value.forEach(r => r.active = (r.name === roomName))
+        }
+      } else {
+        // 如果是新房间，添加到列表
+        rooms.value.push({ name: roomName, active: isActive })
       }
     }
     
@@ -466,19 +524,101 @@ export default {
       return Date.now().toString(36) + Math.random().toString(36).substring(2)
     }
     
+    // 发送消息
+    const sendMessage = (text) => {
+      if (!text) return
+      
+      // 添加本地显示
+      if (!text.startsWith('/')) {
+        // 如果是普通消息，先在本地显示，提高响应速度感
+        if (currentPrivateTarget.value) {
+          displayPrivateMessage(username.value, text, true, Date.now(), currentPrivateTarget.value)
+        } else {
+          displayMessage(username.value, text, true, Date.now())
+        }
+      }
+      
+      // 调试输出
+      console.log('发送消息:', text)
+      
+      // 检查是否为命令
+      if (text.startsWith('/')) {
+        if (text === '/help') {
+          // 客户端处理help命令
+          displaySystemMessage(`可用命令:
+          /help - 显示帮助
+          /rooms - 显示所有房间
+          /join <房间名> - 加入指定房间
+          /users - 显示当前房间用户
+          /msg <用户名> <消息> - 发送私聊消息
+          /ping - 测试网络连接
+          /stats - 显示网络统计信息`)
+        } else if (text.startsWith('/join ')) {
+          // 解析房间名
+          const roomName = text.substring(6).trim()
+          if (roomName) {
+            joinRoom(roomName)
+          }
+        } else if (text.startsWith('/msg ')) {
+          // 解析私聊消息
+          const parts = text.split(' ')
+          if (parts.length >= 3) {
+            const targetUser = parts[1]
+            const msgText = parts.slice(2).join(' ')
+            sendPrivateMessage(targetUser, msgText)
+          } else {
+            displaySystemMessage('用法: /msg <用户名> <消息内容>')
+          }
+        } else if (text === '/ping') {
+          // 直接调用ping函数，不通过服务器命令
+          sendPing()
+          displaySystemMessage('发送ping请求...')
+        } else {
+          // 其他命令发送到服务器处理
+          sendChatMessage('command', username.value, currentRoom.value, text)
+        }
+      } else {
+        // 普通消息
+        if (currentPrivateTarget.value) {
+          // 在私聊模式
+          sendPrivateMessage(currentPrivateTarget.value, text)
+        } else {
+          // 房间消息
+          sendChatMessage('chat', username.value, currentRoom.value, text)
+        }
+      }
+    }
+    
+    // 发送私聊消息
+    const sendPrivateMessage = (targetUser, text) => {
+      sendChatMessage('private', username.value, '私聊', text, targetUser)
+    }
+    
     // 生命周期钩子
+    let pingInterval;
+    
     onMounted(() => {
       // 页面加载时连接服务器
       connect()
       
       // 添加欢迎消息
       displaySystemMessage('欢迎使用网络实验聊天应用！')
+      
+      // 定期发送ping以保持连接 (60秒一次)
+      pingInterval = setInterval(() => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          sendChatMessage('ping', username.value, currentRoom.value, Date.now().toString())
+        }
+      }, 60000)
     })
     
     onUnmounted(() => {
-      // 组件卸载时关闭WebSocket连接
-      if (socket && socket.readyState === WebSocket.OPEN) {
+      clearInterval(pingInterval)
+      if (socket) {
         socket.close()
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout)
       }
     })
     
@@ -505,7 +645,9 @@ export default {
       joinRoom,
       createRoom,
       startPrivateChat,
-      exitPrivateMode
+      exitPrivateMode,
+      manualConnect,
+      clearLogs
     }
   }
 }

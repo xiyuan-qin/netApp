@@ -2,6 +2,9 @@
   <div class="network-monitor">
     <div class="monitor-header">
       <h3>网络监控</h3>
+      <div class="connection-status" :class="wsStatusClass">
+        WebSocket: {{ wsConnectionStatus }}
+      </div>
       <div class="stats">
         <div class="stat-item">
           <span class="label">已发送:</span>
@@ -29,6 +32,14 @@
         <span class="log-message">{{ log.message }}</span>
       </div>
     </div>
+    <div class="network-actions">
+      <button @click="manualConnect" class="action-button">
+        手动连接
+      </button>
+      <button @click="clearLogs" class="action-button secondary">
+        清除日志
+      </button>
+    </div>
   </div>
 </template>
 
@@ -39,7 +50,30 @@ export default {
     sentCount: Number,
     receivedCount: Number,
     averageLatency: String,
-    networkLog: Array
+    networkLog: Array,
+    wsConnectionStatus: {
+      type: String,
+      default: '未连接'
+    }
+  },
+  computed: {
+    wsStatusClass() {
+      switch(this.wsConnectionStatus) {
+        case '已连接': return 'connected';
+        case '正在连接...': return 'connecting';
+        case '连接错误': return 'error';
+        case '已断开': return 'error';
+        default: return 'disconnected';
+      }
+    }
+  },
+  methods: {
+    manualConnect() {
+      this.$emit('manual-connect');
+    },
+    clearLogs() {
+      this.$emit('clear-logs');
+    }
   }
 }
 </script>
@@ -224,5 +258,72 @@ export default {
   .log-container {
     padding: 10px;
   }
+}
+
+.connection-status {
+  margin: 8px 0;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 500;
+  display: inline-block;
+  transition: all 0.3s;
+}
+
+.connection-status.connected {
+  background: rgba(76, 175, 80, 0.2);
+  color: #2e7d32;
+}
+
+.connection-status.connecting {
+  background: rgba(255, 193, 7, 0.2);
+  color: #f57f17;
+  animation: pulse 1.5s infinite;
+}
+
+.connection-status.disconnected,
+.connection-status.error {
+  background: rgba(244, 67, 54, 0.2);
+  color: #d50000;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+.network-actions {
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--border-color);
+  background-color: #f8fafc;
+}
+
+.action-button {
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  border: none;
+  background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+  color: white;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 4px rgba(62, 106, 225, 0.2);
+}
+
+.action-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(62, 106, 225, 0.3);
+}
+
+.action-button.secondary {
+  background: linear-gradient(to right, #6c757d, #495057);
+  box-shadow: 0 2px 4px rgba(108, 117, 125, 0.2);
+}
+
+.action-button.secondary:hover {
+  box-shadow: 0 4px 8px rgba(108, 117, 125, 0.3);
 }
 </style>
