@@ -197,7 +197,11 @@ export default {
                 case 'chat':
                   // 确保文本不为空才显示消息
                   if (message.text && message.text.trim() !== '') {
-                    displayMessage(message.username, message.text, message.username === username.value, message.timestamp)
+                    // 确定此消息是否为当前用户发送的
+                    const isSelfMessage = message.username === username.value
+                    console.log(`收到消息 - 用户: ${message.username}, 我的用户名: ${username.value}, 是自己发的: ${isSelfMessage ? 'YES' : 'NO'}`)
+                    
+                    displayMessage(message.username, message.text, isSelfMessage, message.timestamp)
                   }
                   break
                   
@@ -221,8 +225,10 @@ export default {
                   
                   // 显示私聊消息
                   if (message.text && message.text.trim() !== '') {
+                    // 确定私聊消息是否为自己发送的
+                    const isSelfMessage = message.username === username.value
                     displayPrivateMessage(message.username, message.text, 
-                      message.username === username.value, 
+                      isSelfMessage, 
                       message.timestamp, 
                       message.target)
                   }
@@ -467,7 +473,7 @@ export default {
     
     // 显示消息
     const displayMessage = (fromUsername, text, isSelf, timestamp) => {
-      console.log(`显示消息: ${fromUsername}: ${text}`)
+      console.log(`显示消息: ${fromUsername}: ${text}, isSelf: ${isSelf}, 当前用户: ${username.value}`)
       
       // 创建消息唯一标识
       const messageKey = generateMessageKey(fromUsername, text, timestamp)
@@ -481,11 +487,15 @@ export default {
         displayedLocalMessages.add(messageKey)
       }
       
+      // 确保正确识别自己发送的消息
+      // 通过比较用户名或检查isSelf标志
+      const isCurrentUserMessage = isSelf || fromUsername === username.value
+      
       messages.value.push({
         type: 'chat',
         username: fromUsername,
         text: text,
-        isSelf: isSelf,
+        isSelf: isCurrentUserMessage,
         timestamp: timestamp
       })
       

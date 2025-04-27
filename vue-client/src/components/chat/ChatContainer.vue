@@ -22,20 +22,34 @@
       <div 
         v-for="(message, index) in messages" 
         :key="index" 
-        class="message" 
-        :class="{
-          'system-message': message.type === 'system',
-          'user-message': message.type === 'chat' && message.isSelf,
-          'other-message': message.type === 'chat' && !message.isSelf,
-          'private-message-sent': message.type === 'private' && message.isSelf,
-          'private-message-received': message.type === 'private' && !message.isSelf,
-        }"
+        class="message-wrapper"
       >
-        <div class="message-header" v-if="message.username">
-          <span class="username">{{ message.username }}</span>
+        <!-- 系统消息居中显示 -->
+        <div v-if="message.type === 'system'" class="system-message">
+          <div class="message-content" v-html="formatMessage(message.text)"></div>
           <span class="timestamp">{{ formatTime(message.timestamp) }}</span>
         </div>
-        <div class="message-content" v-html="formatMessage(message.text)"></div>
+        
+        <!-- 聊天消息 - 自己的消息靠右，他人的消息靠左 -->
+        <div 
+          v-else
+          class="message"
+          :style="(message.isSelf || message.username === username) ? 
+                 'align-self: flex-end !important; margin-left: auto !important; margin-right: 0 !important;' : 
+                 'align-self: flex-start !important; margin-right: auto !important; margin-left: 0 !important;'"
+          :class="{
+            'user-message': message.isSelf || message.username === username,
+            'other-message': !message.isSelf && message.username !== username,
+            'private-message': message.type === 'private'
+          }"
+        >
+          <div class="message-header">
+            <span class="username" v-if="!message.isSelf && message.username !== username">{{ message.username }}</span>
+            <span class="username self" v-else>{{ message.username }}</span>
+            <span class="timestamp">{{ formatTime(message.timestamp) }}</span>
+          </div>
+          <div class="message-content" v-html="formatMessage(message.text)"></div>
+        </div>
       </div>
     </div>
     
@@ -209,6 +223,8 @@ export default {
   background-color: transparent;
   scroll-behavior: smooth;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 消息容器装饰背景 */
@@ -232,12 +248,12 @@ export default {
   opacity: 0.6;
 }
 
-.message {
+.message-wrapper {
+  width: 100%;
   margin-bottom: 20px;
-  animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  max-width: 80%;
-  word-wrap: break-word;
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .system-message {
@@ -251,22 +267,28 @@ export default {
   padding: 10px 15px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
   border-left: 3px solid rgba(62, 106, 225, 0.2);
+  animation: fadeIn 0.3s ease-in-out;
 }
 
+.message {
+  max-width: 70%;
+  word-wrap: break-word;
+  position: relative;
+  animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+/* 强制用户自己的消息在右侧 */
 .user-message {
-  margin-left: auto;
+  align-self: flex-end !important; /* 使用!important确保样式优先级 */
+  margin-left: auto !important;
+  margin-right: 0 !important;
 }
 
+/* 强制其他人的消息在左侧 */
 .other-message {
-  margin-right: auto;
-}
-
-.private-message-sent {
-  margin-left: auto;
-}
-
-.private-message-received {
-  margin-right: auto;
+  align-self: flex-start !important;
+  margin-right: auto !important;
+  margin-left: 0 !important;
 }
 
 .message-header {
@@ -280,6 +302,10 @@ export default {
   font-weight: 600;
   font-size: 0.9rem;
   color: var(--text-color);
+}
+
+.username.self {
+  text-align: right;
 }
 
 .timestamp {
@@ -336,25 +362,22 @@ export default {
 }
 
 /* 私聊消息样式 */
-.private-message-sent .message-content {
+.private-message.user-message .message-content {
   background: linear-gradient(135deg, var(--secondary-color), #a173be);
   color: white;
-  border-bottom-right-radius: 4px;
 }
 
-.private-message-received .message-content {
+.private-message.other-message .message-content {
   background: linear-gradient(135deg, #efe7f5, #f0e3ff);
-  border-bottom-left-radius: 4px;
+  color: var(--text-color);
 }
 
-.private-message-received .username,
-.private-message-sent .username {
+.private-message .username {
   color: var(--secondary-color);
   position: relative;
 }
 
-.private-message-received .username::before,
-.private-message-sent .username::before {
+.private-message .username::before {
   content: '🔒';
   font-size: 0.8rem;
   margin-right: 5px;
@@ -437,14 +460,35 @@ a:hover {
 
 /* 链接在消息中的样式 */
 .user-message .message-content a,
-.private-message-sent .message-content a {
+.private-message.user-message .message-content a {
   color: #e0f0ff;
   text-decoration: underline;
   text-decoration-color: rgba(255,255,255,0.4);
 }
 
 .user-message .message-content a:hover,
-.private-message-sent .message-content a:hover {
+.private-message.user-message .message-content a:hover {
   text-decoration-color: rgba(255,255,255,0.7);
+}
+
+/* 添加动画效果 */
+@keyframes popIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fadeIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 </style>
