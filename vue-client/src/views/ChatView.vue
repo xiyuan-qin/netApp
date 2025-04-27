@@ -94,58 +94,227 @@ export default {
       }
       
       // 如果已经有连接，先关闭
-      if (socket && socket.readyState !== WebSocket.CLOSED) {
+      if (socket) {
         try {
-          socket.close()
+          // 保存引用以便在关闭完成后进行清理
+          const oldSocket = socket
+          // 将socket置为null，避免重复关闭
+          socket = null
+          
+          // 确保清理所有事件处理器，避免内存泄漏
+          oldSocket.onopen = null
+          oldSocket.onmessage = null
+          oldSocket.onclose = null
+          oldSocket.onerror = null
+          
+          // 记录要关闭的连接状态
+          const socketState = oldSocket.readyState
+          console.log(`正在关闭旧连接，当前状态: ${socketState}`)
+          
+          if (socketState === WebSocket.OPEN || socketState === WebSocket.CONNECTING) {
+            // 使用标准关闭码和原因
+            oldSocket.close(1000, "正常关闭")
+            logNetwork('关闭', '手动关闭旧连接', 'info')
+          }
         } catch(e) {
           console.error("关闭现有连接出错:", e)
         }
       }
       
-      connectionAttempts++
-      updateConnectionStatus('正在连接...')
-      
-      // 检查当前协议是http还是https
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      
-      // 获取当前主机地址
-      const host = window.location.host
-      let wsUrl
-      
-      // 针对移动设备使用IP直连方式
-      if (isMobileDevice()) {
-        // 在移动设备上使用硬编码的IP地址
-        wsUrl = `${protocol}//172.20.10.3:8080/ws`
-        console.log('移动设备检测: 使用固定IP连接', wsUrl)
-      } else {
-        // 在桌面设备上使用相对路径
-        wsUrl = `${protocol}//${host}/ws`
-        console.log('桌面设备: 使用当前主机连接', wsUrl)
-      }
-      
-      try {
-        socket = new WebSocket(wsUrl)
+      // 等待一小段时间确保旧连接完全关闭
+      setTimeout(() => {
+        connectionAttempts++
+        updateConnectionStatus('正在连接...')
         
-        socket.onopen = handleSocketOpen
+        // 检查当前协议是http还是https
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         
-        socket.onmessage = handleMessage
+        // 获取当前主机地址
+        const host = window.location.host
+        let wsUrl
         
-        socket.onclose = handleSocketClose
+        // 针对移动设备使用IP直连方式
+        if (isMobileDevice()) {
+          // 在移动设备上使用硬编码的IP地址
+          wsUrl = `${protocol}//172.20.10.3:8080/ws`
+          console.log('移动设备检测: 使用固定IP连接', wsUrl)
+        } else {
+          // 在桌面设备上使用相对路径
+          wsUrl = `${protocol}//${host}/ws`
+          console.log('桌面设备: 使用当前主机连接', wsUrl)
+        }
         
-        socket.onerror = handleSocketError
-        
-        // 设置连接超时
-        setTimeout(() => {
-          if (socket && socket.readyState === WebSocket.CONNECTING) {
-            console.log('连接超时，正在关闭')
-            socket.close()
+        try {
+          console.log(`尝试创建新WebSocket连接: ${wsUrl}`)
+          socket = new WebSocket(wsUrl)
+          
+          socket.onopen = (event) => {
+            connectionAttempts = 0
+            updateConnectionStatus('已连接')
+            
+            if (isMobileDevice()) {
+              serverAddress.value = '172.20.10.3:8080'
+            } else {
+              serverAddress.value = window.location.host
+            }
+            
+            logNetwork('连接', '连接已建立', 'info')
+            
+            // 发送初始消息以设置用户名
+            sendChatMessage('chat', username.value, currentRoom.value, '')
+            
+            // 添加系统消息
+            displaySystemMessage('已成功连接到服务器')
           }
-        }, 10000) // 10秒超时
-        
-      } catch (e) {
-        console.error("创建WebSocket连接出错:", e)
-        updateConnectionStatus('连接失败')
-      }
+          
+          socket.onmessage = (event) => {
+            receivedCount.value++
+            
+            try {
+              const message = JSON.parse(event.data)
+              logNetwork('接收', `${message.msg_type}: ${message.text ? (message.text.substring(0, 30) + (message.text.length > 30 ? '...' : '')) : '空消息'}`, 'received')
+              
+              // 移动设备上增加额外日志
+              if (isMobileDevice()) {
+                console.log('移动设备接收消息:', message)
+              }
+              
+              // 确认消息收到，将消息ID从待确认队列中移除
+              if (message.id && messageIdMap.has(message.id)) {
+                messageIdMap.delete(message.id)
+              }
+              
+              // 处理不同类型的消息
+              switch (message.msg_type) {
+                case 'chat':
+                  // 确保文本不为空才显示消息
+                  if (message.text && message.text.trim() !== '') {
+                    displayMessage(message.username, message.text, message.username === username.value, message.timestamp)
+                  }
+                  break
+                  
+                case 'system':
+                  displaySystemMessage(message.text)
+                  
+                  // 提取服务器信息中的客户端IP
+                  if (message.text && message.text.includes('您的IP地址')) {
+                    const ipMatch = message.text.match(/您的IP地址: ([^,]+)/)
+                    if (ipMatch && ipMatch[1]) {
+                      clientAddress.value = ipMatch[1]
+                    }
+                  }
+                  break
+                  
+                case 'private':
+                  // 处理私聊消息
+                  if (!currentPrivateTarget.value && message.username !== username.value) {
+                    startPrivateChat(message.username)
+                  }
+                  
+                  // 显示私聊消息
+                  if (message.text && message.text.trim() !== '') {
+                    displayPrivateMessage(message.username, message.text, 
+                      message.username === username.value, 
+                      message.timestamp, 
+                      message.target)
+                  }
+                  break
+                  
+                case 'userlist':
+                  if (message.text) {
+                    updateUserList(message.text)
+                  }
+                  break
+                  
+                case 'ping':
+                  // 接收到服务器ping，立即回复pong
+                  sendChatMessage('pong', username.value, currentRoom.value, message.text || Date.now().toString())
+                  
+                  // 如果是我们的ping请求，计算延迟
+                  if (pingStartTime > 0) {
+                    const latency = Date.now() - pingStartTime
+                    networkLatency.value = `${latency}ms`
+                    
+                    // 更新平均延迟
+                    pingCount++
+                    totalLatency += latency
+                    averageLatency.value = `${Math.round(totalLatency / pingCount)}ms`
+                    
+                    pingStartTime = 0
+                  }
+                  break
+                  
+                case 'pong':
+                  // 收到服务器的pong响应，计算延迟
+                  if (pingStartTime > 0) {
+                    const latency = Date.now() - pingStartTime
+                    networkLatency.value = `${latency}ms`
+                    
+                    // 更新平均延迟
+                    pingCount++
+                    totalLatency += latency
+                    averageLatency.value = `${Math.round(totalLatency / pingCount)}ms`
+                    
+                    pingStartTime = 0
+                  }
+                  break
+                  
+                default:
+                  console.warn('未知消息类型:', message.msg_type, message)
+              }
+              
+            } catch (e) {
+              console.error('无法解析消息:', e, event.data)
+              logNetwork('错误', '消息解析失败: ' + e.message, 'error')
+              
+              // 显示原始消息以便调试
+              if (typeof event.data === 'string') {
+                logNetwork('调试', `原始消息内容: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`, 'error')
+              }
+            }
+          }
+          
+          socket.onclose = (event) => {
+            updateConnectionStatus('已断开')
+            console.log('WebSocket连接关闭:', event.code, event.reason)
+            logNetwork('关闭', `WebSocket连接关闭: 代码=${event.code}, 原因=${event.reason || '未指定'}`, 'warning')
+            
+            // 如果不是手动关闭，尝试重连
+            if (socket) { // 只有当socket引用仍然存在(不是由我们手动置null)才尝试重连
+              if (connectionAttempts < maxConnectionAttempts) {
+                const delay = Math.min(5000 * Math.pow(1.5, connectionAttempts - 1), 30000)
+                console.log(`将在${Math.round(delay/1000)}秒后尝试重连(尝试${connectionAttempts}/${maxConnectionAttempts})`)
+                
+                reconnectTimeout = setTimeout(connect, delay)
+              } else {
+                console.log(`已达到最大重连次数(${maxConnectionAttempts})，请手动重连`)
+              }
+            }
+            
+            // 清理socket引用
+            socket = null
+          }
+          
+          socket.onerror = (error) => {
+            updateConnectionStatus('连接错误')
+            console.error('WebSocket错误:', error)
+            logNetwork('错误', 'WebSocket连接错误', 'error')
+          }
+          
+          // 设置连接超时
+          setTimeout(() => {
+            if (socket && socket.readyState === WebSocket.CONNECTING) {
+              console.log('连接超时，正在关闭')
+              socket.close(1006, "连接超时")
+              // 不要在这里设置socket = null，让onclose事件处理
+            }
+          }, 10000) // 10秒超时
+          
+        } catch (e) {
+          console.error("创建WebSocket连接出错:", e)
+          updateConnectionStatus('连接失败')
+        }
+      }, 300); // 给旧连接300毫秒关闭时间
     }
     
     // 手动触发连接
@@ -159,156 +328,6 @@ export default {
     const clearLogs = () => {
       networkLog.value = []
       console.log('日志已清除')
-    }
-    
-    // 处理Socket打开事件
-    const handleSocketOpen = () => {
-      connectionAttempts = 0
-      updateConnectionStatus('已连接')
-      
-      if (isMobileDevice()) {
-        serverAddress.value = '172.20.10.3:8080'
-      } else {
-        serverAddress.value = window.location.host
-      }
-      
-      logNetwork('连接', '连接已建立', 'info')
-      
-      // 发送初始消息以设置用户名
-      sendChatMessage('chat', username.value, currentRoom.value, '')
-      
-      // 添加系统消息
-      displaySystemMessage('已成功连接到服务器')
-    }
-    
-    // 处理Socket关闭事件
-    const handleSocketClose = (event) => {
-      updateConnectionStatus('已断开')
-      console.log('WebSocket连接关闭:', event.code)
-      
-      // 如果不是手动关闭，尝试重连
-      if (connectionAttempts < maxConnectionAttempts) {
-        const delay = Math.min(5000 * Math.pow(1.5, connectionAttempts - 1), 30000)
-        console.log(`将在${Math.round(delay/1000)}秒后尝试重连(尝试${connectionAttempts}/${maxConnectionAttempts})`)
-        
-        reconnectTimeout = setTimeout(connect, delay)
-      } else {
-        console.log(`已达到最大重连次数(${maxConnectionAttempts})，请手动重连`)
-      }
-    }
-    
-    // 处理Socket错误事件
-    const handleSocketError = (error) => {
-      updateConnectionStatus('连接错误')
-      console.error('WebSocket错误:', error)
-    }
-    
-    // 处理接收到的消息
-    const handleMessage = (event) => {
-      receivedCount.value++
-      
-      try {
-        const message = JSON.parse(event.data)
-        logNetwork('接收', `${message.msg_type}: ${message.text ? (message.text.substring(0, 30) + (message.text.length > 30 ? '...' : '')) : '空消息'}`, 'received')
-        
-        // 移动设备上增加额外日志
-        if (isMobileDevice()) {
-          console.log('移动设备接收消息:', message)
-        }
-        
-        // 确认消息收到，将消息ID从待确认队列中移除
-        if (message.id && messageIdMap.has(message.id)) {
-          messageIdMap.delete(message.id)
-        }
-        
-        // 处理不同类型的消息
-        switch (message.msg_type) {
-          case 'chat':
-            // 确保文本不为空才显示消息
-            if (message.text && message.text.trim() !== '') {
-              displayMessage(message.username, message.text, message.username === username.value, message.timestamp)
-            }
-            break
-            
-          case 'system':
-            displaySystemMessage(message.text)
-            
-            // 提取服务器信息中的客户端IP
-            if (message.text && message.text.includes('您的IP地址')) {
-              const ipMatch = message.text.match(/您的IP地址: ([^,]+)/)
-              if (ipMatch && ipMatch[1]) {
-                clientAddress.value = ipMatch[1]
-              }
-            }
-            break
-            
-          case 'private':
-            // 处理私聊消息
-            if (!currentPrivateTarget.value && message.username !== username.value) {
-              startPrivateChat(message.username)
-            }
-            
-            // 显示私聊消息
-            if (message.text && message.text.trim() !== '') {
-              displayPrivateMessage(message.username, message.text, 
-                message.username === username.value, 
-                message.timestamp, 
-                message.target)
-            }
-            break
-            
-          case 'userlist':
-            if (message.text) {
-              updateUserList(message.text)
-            }
-            break
-            
-          case 'ping':
-            // 接收到服务器ping，立即回复pong
-            sendChatMessage('pong', username.value, currentRoom.value, message.text || Date.now().toString())
-            
-            // 如果是我们的ping请求，计算延迟
-            if (pingStartTime > 0) {
-              const latency = Date.now() - pingStartTime
-              networkLatency.value = `${latency}ms`
-              
-              // 更新平均延迟
-              pingCount++
-              totalLatency += latency
-              averageLatency.value = `${Math.round(totalLatency / pingCount)}ms`
-              
-              pingStartTime = 0
-            }
-            break
-            
-          case 'pong':
-            // 收到服务器的pong响应，计算延迟
-            if (pingStartTime > 0) {
-              const latency = Date.now() - pingStartTime
-              networkLatency.value = `${latency}ms`
-              
-              // 更新平均延迟
-              pingCount++
-              totalLatency += latency
-              averageLatency.value = `${Math.round(totalLatency / pingCount)}ms`
-              
-              pingStartTime = 0
-            }
-            break
-            
-          default:
-            console.warn('未知消息类型:', message.msg_type, message)
-        }
-        
-      } catch (e) {
-        console.error('无法解析消息:', e, event.data)
-        logNetwork('错误', '消息解析失败: ' + e.message, 'error')
-        
-        // 显示原始消息以便调试
-        if (typeof event.data === 'string') {
-          logNetwork('调试', `原始消息内容: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`, 'error')
-        }
-      }
     }
     
     // 更新连接状态

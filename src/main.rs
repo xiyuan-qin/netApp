@@ -59,24 +59,52 @@ async fn ws_route(
     // 获取客户端IP地址
     let connection_info = req.connection_info();
     let client_addr = connection_info.peer_addr().unwrap_or("unknown").to_string();
-    log::info!("New WebSocket connection from {}", client_addr);
     
     // 为新连接创建唯一标识符
     let id = Uuid::new_v4().to_string();
+    log::info!("New WebSocket connection from {}, session_id: {}", client_addr, &id);
+    
+    // 生成随机数字后缀的用户名，避免用户名冲突
+    let random_suffix = rand::random::<u16>() % 1000;
+    let default_username = format!("用户{}", random_suffix);
     
     // 初始化用户会话(用户名和房间稍后会通过消息更新)
     let user_session = UserSession {
         id: id.clone(),
-        username: "未命名用户".to_string(),
+        username: default_username.clone(),
         room: "大厅".to_string(),
         addr: client_addr.clone(),
         session: session.clone(),
         last_heartbeat: Instant::now(),
     };
     
-    // 存储连接
+    // 存储连接前先检查并清理可能存在的同IP陈旧连接
     {
         let mut sessions = app_state.sessions.lock().unwrap();
+        let mut stale_sessions = Vec::new();
+        
+        // 检查是否有来自相同IP的陈旧连接
+        for (session_id, existing_session) in sessions.iter() {
+            // 如果是相同IP地址并且心跳超过60秒，认为是陈旧连接
+            if existing_session.addr == client_addr && 
+               existing_session.last_heartbeat.elapsed() > Duration::from_secs(60) {
+                stale_sessions.push(session_id.clone());
+            }
+        }
+        
+        // 移除陈旧连接
+        for stale_id in &stale_sessions {
+            log::info!("Removing stale connection: {} from same IP {}", stale_id, client_addr);
+            if let Some(stale_session) = sessions.remove(stale_id) {
+                // 从房间中移除
+                let mut rooms = app_state.rooms.lock().unwrap();
+                if let Some(room_users) = rooms.get_mut(&stale_session.room) {
+                    room_users.remove(stale_id);
+                }
+            }
+        }
+        
+        // 添加新连接
         sessions.insert(id.clone(), user_session);
         
         // 将用户添加到默认房间
@@ -98,8 +126,26 @@ async fn ws_route(
         target: None,
     };
     
+    // 记录信息到日志，帮助调试
+    log::info!("Sending welcome message to new connection {}", id);
+    
     if let Err(e) = session.text(serde_json::to_string(&server_info).unwrap()).await {
         log::error!("Error sending welcome message: {:?}", e);
+    }
+    
+    // 初始化时发送默认用户名
+    let init_msg = ChatMessage {
+        msg_type: "chat".to_string(),
+        username: default_username,
+        room: "大厅".to_string(),
+        text: "".to_string(),
+        timestamp: chrono::Utc::now().timestamp() as u64,
+        id: Uuid::new_v4().to_string(),
+        target: None,
+    };
+    
+    if let Err(e) = session.text(serde_json::to_string(&init_msg).unwrap()).await {
+        log::error!("Error sending init message: {:?}", e);
     }
     
     // 发送当前在线用户列表
@@ -119,14 +165,18 @@ async fn ws_route(
                     match msg {
                         Some(Ok(ws_msg)) => {
                             if !handle_message(ws_msg, &id_clone, &app_state_clone).await {
+                                log::info!("Connection {} message handler returned false, breaking loop", id_clone);
                                 break;
                             }
                         }
                         Some(Err(e)) => {
-                            log::error!("WebSocket error: {:?}", e);
+                            log::error!("WebSocket error for {}: {:?}", id_clone, e);
                             break;
                         }
-                        None => break,
+                        None => {
+                            log::info!("WebSocket stream ended for {}", id_clone);
+                            break;
+                        }
                     }
                 }
                 
@@ -156,6 +206,7 @@ async fn ws_route(
                             break;
                         }
                     } else {
+                        log::warn!("Session {} not found during ping", id_clone);
                         break;
                     }
                 }
@@ -163,6 +214,7 @@ async fn ws_route(
         }
         
         // 连接关闭，处理用户离开
+        log::info!("WebSocket handler loop exited for {}, cleaning up", id_clone);
         handle_disconnect(&id_clone, &app_state_clone).await;
     });
     

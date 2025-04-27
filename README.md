@@ -125,7 +125,11 @@ cargo run
    - 告知其他用户在浏览器中输入: `http://[你的IP地址]:8080`
    - 例如: `http://192.168.1.15:8080`
    - 查找你的IP地址的方法:
-     - 在macOS上: 打开终端，输入 `ifconfig | grep "inet " | grep -v 127.0.0.1`
+     - 在macOS上: 
+       - WiFi连接: `ipconfig getifaddr en0` 
+       - 有线连接: `ipconfig getifaddr en1`
+       - 或者使用: `ifconfig | grep "inet " | grep -v 127.0.0.1`
+       - 也可以在"系统设置 > 网络"中查看
      - 在Windows上: 打开命令提示符，输入 `ipconfig`，查找"IPv4 地址"
      - 在Linux上: 打开终端，输入 `ip addr show | grep "inet " | grep -v 127.0.0.1`
      - 通常你需要找到类似 `192.168.x.x` 或 `10.0.x.x` 格式的地址，这是你的局域网IP
