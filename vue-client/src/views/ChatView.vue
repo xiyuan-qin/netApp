@@ -473,7 +473,9 @@ export default {
     
     // 显示消息
     const displayMessage = (fromUsername, text, isSelf, timestamp) => {
-      console.log(`显示消息: ${fromUsername}: ${text}, isSelf: ${isSelf}, 当前用户: ${username.value}`)
+      console.log(`调试 - 显示消息: ${fromUsername}: ${text}`)
+      console.log(`调试 - 当前用户: ${username.value}, isSelf=${isSelf}`)
+      console.log(`调试 - 是自己的消息? ${fromUsername === username.value ? "是" : "否"}`)
       
       // 创建消息唯一标识
       const messageKey = generateMessageKey(fromUsername, text, timestamp)
@@ -487,17 +489,20 @@ export default {
         displayedLocalMessages.add(messageKey)
       }
       
-      // 确保正确识别自己发送的消息
-      // 通过比较用户名或检查isSelf标志
+      // 明确标记消息是否为当前用户发送的
+      // 不仅检查用户名，还接受服务器传来的 isSelf 标记
       const isCurrentUserMessage = isSelf || fromUsername === username.value
       
-      messages.value.push({
+      const newMessage = {
         type: 'chat',
         username: fromUsername,
         text: text,
-        isSelf: isCurrentUserMessage,
+        isSelf: isCurrentUserMessage, // 确保这个字段被正确标记
         timestamp: timestamp
-      })
+      }
+      
+      console.log("添加新消息对象:", JSON.stringify(newMessage))
+      messages.value.push(newMessage)
       
       // 限制消息数量，避免内存占用过高
       if (messages.value.length > 200) {
@@ -527,11 +532,14 @@ export default {
         displayedLocalMessages.add(privateMessageKey)
       }
       
+      // 明确标记消息是否为当前用户发送的
+      const isCurrentUserMessage = isSelf || fromUsername === username.value
+      
       messages.value.push({
         type: 'private',
         username: fromUsername,
         text: text,
-        isSelf: isSelf,
+        isSelf: isCurrentUserMessage, // 确保这个字段被正确标记
         timestamp: timestamp,
         target: target
       })
@@ -542,7 +550,6 @@ export default {
       }
       
       // 定期清理旧的消息记录，避免内存泄漏
-      // 每添加20条消息清理一次
       if (displayedLocalMessages.size % 20 === 0) {
         setTimeout(() => {
           cleanupOldDisplayedMessages();

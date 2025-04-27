@@ -14,54 +14,55 @@
       </div>
     </div>
     
-    <div class="message-container" ref="messageContainerRef">
+    <div class="messages-container" ref="messagesContainer">
       <div v-if="messages.length === 0" class="no-messages">
         暂无消息，开始聊天吧！
       </div>
       
-      <div 
-        v-for="(message, index) in messages" 
-        :key="index" 
-        class="message-wrapper"
-      >
-        <!-- 系统消息居中显示 -->
-        <div v-if="message.type === 'system'" class="system-message">
-          <div class="message-content" v-html="formatMessage(message.text)"></div>
-          <span class="timestamp">{{ formatTime(message.timestamp) }}</span>
-        </div>
-        
-        <!-- 聊天消息 - 自己的消息靠右，他人的消息靠左 -->
-        <div 
-          v-else
-          class="message"
-          :style="(message.isSelf || message.username === username) ? 
-                 'align-self: flex-end !important; margin-left: auto !important; margin-right: 0 !important;' : 
-                 'align-self: flex-start !important; margin-right: auto !important; margin-left: 0 !important;'"
-          :class="{
-            'user-message': message.isSelf || message.username === username,
-            'other-message': !message.isSelf && message.username !== username,
-            'private-message': message.type === 'private'
-          }"
-        >
-          <div class="message-header">
-            <span class="username" v-if="!message.isSelf && message.username !== username">{{ message.username }}</span>
-            <span class="username self" v-else>{{ message.username }}</span>
-            <span class="timestamp">{{ formatTime(message.timestamp) }}</span>
+      <div class="messages-list">
+        <template v-for="(message, index) in messages" :key="index">
+          <!-- 系统消息 -->
+          <div v-if="message.type === 'system'" class="message-item system-message">
+            <div class="system-content">{{ message.text }}</div>
           </div>
-          <div class="message-content" v-html="formatMessage(message.text)"></div>
-        </div>
+          
+          <!-- 自己发送的消息，右侧显示 -->
+          <div v-else-if="isMyMessage(message)" class="message-item right-message">
+            <div class="message-avatar self-avatar">
+              {{ getInitial(username) }}
+            </div>
+            <div class="message-content self-message">
+              <div class="message-text">{{ message.text }}</div>
+              <div class="message-time">{{ formatTime(message.timestamp) }}</div>
+            </div>
+          </div>
+          
+          <!-- 他人发送的消息，左侧显示 -->
+          <div v-else class="message-item left-message">
+            <div class="message-avatar other-avatar">
+              {{ getInitial(message.username) }}
+            </div>
+            <div class="message-content other-message">
+              <div class="sender-name">{{ message.username }}</div>
+              <div class="message-text">{{ message.text }}</div>
+              <div class="message-time">{{ formatTime(message.timestamp) }}</div>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
     
-    <div class="message-input">
+    <div class="input-container">
       <textarea 
-        ref="messageInputRef"
-        v-model="messageText" 
-        placeholder="输入消息..." 
-        @keyup.enter="sendMessage"
-        :class="{ 'private-mode': currentPrivateTarget }"
+        ref="messageInput"
+        v-model="inputMessage" 
+        @keydown.enter.prevent="sendMessage"
+        :placeholder="currentPrivateTarget ? `发送给 ${currentPrivateTarget} 的私聊消息...` : '发送消息...'"
+        :class="{'private-mode': currentPrivateTarget}"
       ></textarea>
-      <button class="send-btn" @click="sendMessage">发送</button>
+      <button @click="sendMessage" class="send-button">
+        发送
+      </button>
     </div>
   </div>
 </template>
@@ -72,47 +73,41 @@ import { ref, onMounted, watch, nextTick } from 'vue'
 export default {
   name: 'ChatContainer',
   props: {
-    currentRoom: String,
-    currentPrivateTarget: String,
-    messages: Array,
-    username: String
+    currentRoom: {
+      type: String,
+      required: true
+    },
+    currentPrivateTarget: {
+      type: String,
+      default: null
+    },
+    messages: {
+      type: Array,
+      required: true
+    },
+    username: {
+      type: String,
+      required: true
+    }
   },
   
   setup(props, { emit }) {
-    const messageText = ref('')
-    const messageContainerRef = ref(null)
-    const messageInputRef = ref(null)
+    const inputMessage = ref('')
+    const messagesContainer = ref(null)
+    const messageInput = ref(null)
     
-    // 在消息容器中滚动到最底部
-    const scrollToBottom = () => {
-      nextTick(() => {
-        if (messageContainerRef.value) {
-          messageContainerRef.value.scrollTop = messageContainerRef.value.scrollHeight
-        }
-      })
+    // 判断消息是否为当前用户发送的
+    const isMyMessage = (message) => {
+      console.log(`判断消息归属: ${message.username} vs ${props.username}, isSelf=${message.isSelf}`)
+      return message.username === props.username || message.isSelf === true
     }
     
-    // 格式化消息文本，处理链接和表情
-    const formatMessage = (text) => {
-      if (!text) return ''
-      
-      // 将URL转换为链接
-      const urlRegex = /(https?:\/\/[^\s]+)/g
-      let formattedText = text.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
-      
-      // 简单的表情符号替换
-      formattedText = formattedText
-        .replace(/:\)/g, '😊')
-        .replace(/:\(/g, '😢')
-        .replace(/:D/g, '😃')
-        .replace(/;\)/g, '😉')
-        .replace(/:P/g, '😛')
-        .replace(/<3/g, '❤️')
-      
-      return formattedText
+    // 获取用户名首字母
+    const getInitial = (username) => {
+      return username ? username.charAt(0).toUpperCase() : '?'
     }
     
-    // 格式化时间戳
+    // 格式化时间
     const formatTime = (timestamp) => {
       if (!timestamp) return ''
       
@@ -123,47 +118,56 @@ export default {
       return `${hours}:${minutes}`
     }
     
+    // 滚动到底部
+    const scrollToBottom = () => {
+      nextTick(() => {
+        if (messagesContainer.value) {
+          messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+        }
+      })
+    }
+    
     // 发送消息
     const sendMessage = () => {
-      const text = messageText.value.trim()
+      const text = inputMessage.value.trim()
       if (text) {
+        console.log(`发送消息: ${text}, 用户: ${props.username}`)
         emit('send-message', text)
-        messageText.value = ''
+        inputMessage.value = ''
         
         // 聚焦回输入框
-        messageInputRef.value.focus()
+        messageInput.value.focus()
       }
     }
     
-    // 监听消息列表变化，自动滚动到底部
+    // 监听消息变化，自动滚动
     watch(() => props.messages.length, () => {
       scrollToBottom()
     })
     
-    // 监听当前房间变化，清空输入框
-    watch(() => props.currentRoom, () => {
-      messageText.value = ''
+    // 监听房间或私聊对象变化
+    watch([() => props.currentRoom, () => props.currentPrivateTarget], () => {
+      inputMessage.value = ''
+      nextTick(() => {
+        messageInput.value.focus()
+      })
     })
     
-    // 监听私聊目标变化，清空输入框
-    watch(() => props.currentPrivateTarget, () => {
-      messageText.value = ''
-      messageInputRef.value.focus()
-    })
-    
-    // 组件挂载后自动滚动到底部
+    // 组件挂载后
     onMounted(() => {
+      console.log(`ChatContainer 已挂载，当前用户: ${props.username}`)
       scrollToBottom()
-      messageInputRef.value.focus()
+      messageInput.value.focus()
     })
     
     return {
-      messageText,
-      messageContainerRef,
-      messageInputRef,
-      sendMessage,
-      formatMessage,
-      formatTime
+      inputMessage,
+      messagesContainer,
+      messageInput,
+      isMyMessage,
+      getInitial,
+      formatTime,
+      sendMessage
     }
   }
 }
@@ -171,324 +175,217 @@ export default {
 
 <style scoped>
 .chat-container {
-  flex: 1;
   display: flex;
   flex-direction: column;
   height: 100%;
+  flex: 1;
   overflow: hidden;
-  background: linear-gradient(to bottom, #f5f7fa, #f0f4f8);
+  background-color: #f5f7fa;
   position: relative;
 }
 
 .chat-header {
-  padding: 16px 20px;
-  background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+  padding: 15px 20px;
+  background: linear-gradient(135deg, #4361ee, #3f37c9);
   color: white;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-  position: relative;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   z-index: 10;
 }
 
 .room-info h2 {
-  font-size: 1.3rem;
-  font-weight: 600;
   margin: 0;
-  color: white;
+  font-size: 1.3rem;
   display: flex;
   align-items: center;
 }
 
 .exit-private-btn {
-  margin-left: 15px;
-  background-color: rgba(255, 255, 255, 0.2);
+  margin-left: 10px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.2);
   border: none;
-  border-radius: var(--radius-md);
-  padding: 6px 12px;
-  font-size: 0.85rem;
-  cursor: pointer;
+  border-radius: 4px;
   color: white;
-  transition: var(--transition);
+  font-size: 0.8rem;
+  cursor: pointer;
 }
 
 .exit-private-btn:hover {
-  background-color: rgba(255, 255, 255, 0.3);
-  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.3);
 }
 
-.message-container {
+.messages-container {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
-  background-color: transparent;
   scroll-behavior: smooth;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-}
-
-/* 消息容器装饰背景 */
-.message-container::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: url('data:image/svg+xml;utf8,<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg"><rect width="100" height="100" fill="none"/><path d="M20,10 L80,10 L80,90 L20,90 Z" stroke="%233e6ae1" stroke-width="0.5" fill="none" stroke-opacity="0.03"/><circle cx="50" cy="50" r="30" stroke="%238a56ac" stroke-width="0.5" fill="none" stroke-opacity="0.05"/></svg>') repeat;
-  opacity: 0.1;
-  z-index: -1;
 }
 
 .no-messages {
   text-align: center;
-  color: var(--text-light);
-  margin-top: 80px;
-  font-size: 1rem;
-  opacity: 0.6;
+  color: #a0aec0;
+  margin-top: 40px;
+  font-size: 0.9rem;
 }
 
-.message-wrapper {
-  width: 100%;
-  margin-bottom: 20px;
+.messages-list {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
 }
 
-.system-message {
-  background-color: rgba(62, 106, 225, 0.07);
-  border-radius: var(--radius-md);
-  color: var(--text-light);
-  font-size: 0.92rem;
-  text-align: center;
-  margin: 15px auto;
-  max-width: 90%;
-  padding: 10px 15px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
-  border-left: 3px solid rgba(62, 106, 225, 0.2);
-  animation: fadeIn 0.3s ease-in-out;
-}
-
-.message {
-  max-width: 70%;
-  word-wrap: break-word;
-  position: relative;
-  animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-}
-
-/* 强制用户自己的消息在右侧 */
-.user-message {
-  align-self: flex-end !important; /* 使用!important确保样式优先级 */
-  margin-left: auto !important;
-  margin-right: 0 !important;
-}
-
-/* 强制其他人的消息在左侧 */
-.other-message {
-  align-self: flex-start !important;
-  margin-right: auto !important;
-  margin-left: 0 !important;
-}
-
-.message-header {
+.message-item {
+  margin-bottom: 16px;
   display: flex;
-  justify-content: space-between;
-  margin-bottom: 4px;
-  padding: 0 2px;
+  align-items: flex-start;
+  max-width: 85%;
 }
 
-.username {
-  font-weight: 600;
-  font-size: 0.9rem;
-  color: var(--text-color);
+/* 系统消息居中 */
+.system-message {
+  align-self: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 8px 16px;
+  border-radius: 16px;
+  margin: 8px 0;
 }
 
-.username.self {
-  text-align: right;
+.system-content {
+  color: #718096;
+  font-size: 0.85rem;
+  text-align: center;
 }
 
-.timestamp {
-  font-size: 0.75rem;
-  color: var(--text-light);
-  margin-left: 10px;
+/* 右侧消息（我发送的） */
+.right-message {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+  margin-left: auto;
+}
+
+/* 左侧消息（他人发送的） */
+.left-message {
+  align-self: flex-start;
+  margin-right: auto;
+}
+
+.message-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  flex-shrink: 0;
+  margin: 0 8px;
+  color: white;
+}
+
+.self-avatar {
+  background-color: #4361ee;
+}
+
+.other-avatar {
+  background-color: #718096;
 }
 
 .message-content {
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-  line-height: 1.4;
+  padding: 10px 15px;
+  border-radius: 18px;
   position: relative;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  word-break: break-word;
+  max-width: calc(100% - 60px);
 }
 
-/* 用户消息气泡 */
-.user-message .message-content {
-  background: linear-gradient(135deg, var(--primary-color), #5175dd);
+.self-message {
+  background: linear-gradient(135deg, #4361ee, #3a0ca3);
   color: white;
   border-bottom-right-radius: 4px;
 }
 
-.user-message .message-content::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  right: -8px;
-  width: 16px;
-  height: 16px;
-  background: var(--primary-color);
-  border-bottom-left-radius: 16px;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
-  clip-path: polygon(0 0, 0 100%, 100% 100%);
-}
-
-/* 其他用户消息气泡 */
-.other-message .message-content {
+.other-message {
   background-color: white;
-  border-bottom-left-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);
+  color: #4a5568;
+  border-top-left-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-.other-message .message-content::before {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: -8px;
-  width: 16px;
-  height: 16px;
-  background: white;
-  border-bottom-right-radius: 16px;
-  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+.sender-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #4a5568;
 }
 
-/* 私聊消息样式 */
-.private-message.user-message .message-content {
-  background: linear-gradient(135deg, var(--secondary-color), #a173be);
-  color: white;
+.message-text {
+  font-size: 0.95rem;
+  line-height: 1.4;
 }
 
-.private-message.other-message .message-content {
-  background: linear-gradient(135deg, #efe7f5, #f0e3ff);
-  color: var(--text-color);
+.message-time {
+  font-size: 0.7rem;
+  text-align: right;
+  margin-top: 4px;
+  opacity: 0.8;
 }
 
-.private-message .username {
-  color: var(--secondary-color);
-  position: relative;
+.self-message .message-time {
+  color: rgba(255, 255, 255, 0.8);
 }
 
-.private-message .username::before {
-  content: '🔒';
-  font-size: 0.8rem;
-  margin-right: 5px;
-}
-
-.message-input {
-  padding: 18px;
-  border-top: 1px solid var(--border-color);
+.input-container {
+  padding: 15px;
+  border-top: 1px solid #e2e8f0;
   background-color: white;
   display: flex;
   align-items: center;
-  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
-  position: relative;
 }
 
 textarea {
   flex: 1;
-  padding: 12px 16px;
-  border: 2px solid var(--border-color);
-  border-radius: var(--radius-md);
-  resize: none;
-  height: 24px;
-  font-family: var(--font-sans);
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  padding: 10px 15px;
   font-size: 0.95rem;
-  outline: none;
-  transition: var(--transition);
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
-  line-height: 1.4;
+  max-height: 100px;
+  min-height: 20px;
+  resize: none;
+  transition: border-color 0.3s, box-shadow 0.3s;
 }
 
 textarea:focus {
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(62, 106, 225, 0.15);
+  outline: none;
+  border-color: #4361ee;
+  box-shadow: 0 0 0 2px rgba(67, 97, 238, 0.2);
 }
 
 textarea.private-mode {
-  border-color: var(--secondary-color);
-  background-color: rgba(138, 86, 172, 0.03);
-  box-shadow: 0 0 0 3px rgba(138, 86, 172, 0.1);
+  border-color: #8a56ac;
+  background-color: rgba(138, 86, 172, 0.05);
 }
 
-.send-btn {
-  background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+.send-button {
+  margin-left: 10px;
+  background: #4361ee;
   color: white;
   border: none;
-  border-radius: var(--radius-md);
-  padding: 0 20px;
-  height: 42px;
-  margin-left: 12px;
-  cursor: pointer;
+  width: 80px;
+  height: 40px;
+  border-radius: 20px;
   font-weight: 600;
-  font-size: 0.95rem;
-  transition: var(--transition);
-  box-shadow: 0 2px 8px rgba(62, 106, 225, 0.2);
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.send-btn:hover {
+.send-button:hover {
+  background: #3a0ca3;
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(62, 106, 225, 0.3);
 }
 
-a {
-  color: #0366d6;
-  text-decoration: none;
-}
-
-a:hover {
-  text-decoration: underline;
-}
-
-@media (max-width: 1000px) {
-  .message {
+@media (max-width: 768px) {
+  .message-item {
     max-width: 90%;
-  }
-  
-  .message-input {
-    padding: 12px;
-  }
-}
-
-/* 链接在消息中的样式 */
-.user-message .message-content a,
-.private-message.user-message .message-content a {
-  color: #e0f0ff;
-  text-decoration: underline;
-  text-decoration-color: rgba(255,255,255,0.4);
-}
-
-.user-message .message-content a:hover,
-.private-message.user-message .message-content a:hover {
-  text-decoration-color: rgba(255,255,255,0.7);
-}
-
-/* 添加动画效果 */
-@keyframes popIn {
-  0% {
-    opacity: 0;
-    transform: scale(0.9);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes fadeIn {
-  0% {
-    opacity: 0;
-  }
-  100% {
-    opacity: 1;
   }
 }
 </style>
