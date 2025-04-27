@@ -80,9 +80,17 @@ export default {
     let maxConnectionAttempts = 5
     let reconnectTimeout = null
     
+    // 用于跟踪已在本地显示的消息，避免重复显示
+    let displayedLocalMessages = new Set()
+    
     // 检测是否是移动设备
     const isMobileDevice = () => {
       return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    }
+    
+    // 生成消息唯一标识
+    const generateMessageKey = (username, text, timestamp) => {
+      return `${username}:${text.substring(0, 20)}:${timestamp}`
     }
     
     // 连接WebSocket服务器
@@ -148,7 +156,7 @@ export default {
           console.log(`尝试创建新WebSocket连接: ${wsUrl}`)
           socket = new WebSocket(wsUrl)
           
-          socket.onopen = (event) => {
+          socket.onopen = () => { // 移除 event 参数，因为未使用
             connectionAttempts = 0
             updateConnectionStatus('已连接')
             
@@ -461,6 +469,18 @@ export default {
     const displayMessage = (fromUsername, text, isSelf, timestamp) => {
       console.log(`显示消息: ${fromUsername}: ${text}`)
       
+      // 创建消息唯一标识
+      const messageKey = generateMessageKey(fromUsername, text, timestamp)
+      
+      // 检查消息是否已经显示过
+      if (displayedLocalMessages.has(messageKey)) {
+        console.log('跳过已显示的消息:', messageKey)
+        return
+      } else {
+        // 添加到已显示消息集合
+        displayedLocalMessages.add(messageKey)
+      }
+      
       messages.value.push({
         type: 'chat',
         username: fromUsername,
@@ -473,11 +493,29 @@ export default {
       if (messages.value.length > 200) {
         messages.value.shift()
       }
+      
+      // 定期清理已显示消息记录
+      if (displayedLocalMessages.size % 20 === 0) {
+        setTimeout(() => {
+          cleanupOldDisplayedMessages();
+        }, 1000);
+      }
     }
     
     // 显示私聊消息
     const displayPrivateMessage = (fromUsername, text, isSelf, timestamp, target) => {
       console.log(`显示私聊消息: ${fromUsername} -> ${target}: ${text}`)
+      
+      // 创建私聊消息的唯一键
+      const privateMessageKey = generateMessageKey(fromUsername, text, timestamp)
+      
+      // 检查消息是否已经显示过
+      if (displayedLocalMessages.has(privateMessageKey)) {
+        console.log('跳过已显示的私聊消息:', privateMessageKey)
+        return
+      } else {
+        displayedLocalMessages.add(privateMessageKey)
+      }
       
       messages.value.push({
         type: 'private',
@@ -491,6 +529,23 @@ export default {
       // 限制消息数量，避免内存占用过高
       if (messages.value.length > 200) {
         messages.value.shift()
+      }
+      
+      // 定期清理旧的消息记录，避免内存泄漏
+      // 每添加20条消息清理一次
+      if (displayedLocalMessages.size % 20 === 0) {
+        setTimeout(() => {
+          cleanupOldDisplayedMessages();
+        }, 1000);
+      }
+    }
+    
+    // 清理过旧的已显示消息记录
+    const cleanupOldDisplayedMessages = () => {
+      // 如果记录太多，进行清理
+      if (displayedLocalMessages.size > 100) {
+        console.log('清理过期的消息记录');
+        displayedLocalMessages.clear();
       }
     }
     
@@ -547,19 +602,6 @@ export default {
     const sendMessage = (text) => {
       if (!text) return
       
-      // 添加本地显示
-      if (!text.startsWith('/')) {
-        // 如果是普通消息，先在本地显示，提高响应速度感
-        if (currentPrivateTarget.value) {
-          displayPrivateMessage(username.value, text, true, Date.now(), currentPrivateTarget.value)
-        } else {
-          displayMessage(username.value, text, true, Date.now())
-        }
-      }
-      
-      // 调试输出
-      console.log('发送消息:', text)
-      
       // 检查是否为命令
       if (text.startsWith('/')) {
         if (text === '/help') {
@@ -597,7 +639,8 @@ export default {
           sendChatMessage('command', username.value, currentRoom.value, text)
         }
       } else {
-        // 普通消息
+        // 普通消息 - 不再在本地先显示，等服务器返回后再显示
+        // 避免用户名不一致导致的重复消息问题
         if (currentPrivateTarget.value) {
           // 在私聊模式
           sendPrivateMessage(currentPrivateTarget.value, text)
