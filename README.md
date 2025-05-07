@@ -156,19 +156,65 @@ cargo run
 
 3. **上传代码到服务器**
    ```bash
+   # 如果是Git仓库
+   git clone git@github.com:xiyuan-qin/netApp.git ~/net_app
+   # 或者直接上传本地文件
    scp -r /path/to/net_app user@your-server-ip:~
    ```
 
 4. **在服务器上编译和运行**
    ```bash
    cd ~/net_app
+   # 安装可能需要的依赖（以Ubuntu为例）
+   sudo apt update
+   sudo apt install -y build-essential pkg-config libssl-dev
+
+   # 编译应用
    cargo build --release
-   nohup ./target/release/net_app &
+   
+   # 后台运行服务（保持在退出SSH后继续运行）
+   nohup ./target/release/net_app > app.log 2>&1 &
+   
+   # 查看运行状态
+   ps aux | grep net_app
+   
+   # 查看日志
+   tail -f app.log
    ```
 
-5. **分享访问地址**
+5. **服务管理（可选）**
+   ```bash
+   # 停止服务
+   pkill -f "net_app"
+   
+   # 设置开机自启动（使用systemd，适用于大多数现代Linux发行版）
+   sudo tee /etc/systemd/system/netapp.service > /dev/null <<EOT
+   [Unit]
+   Description=Net App Chat Server
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=$(whoami)
+   WorkingDirectory=$(realpath ~/net_app)
+   ExecStart=$(realpath ~/net_app/target/release/net_app)
+   Restart=on-failure
+   RestartSec=5s
+
+   [Install]
+   WantedBy=multi-user.target
+   EOT
+   
+   # 启用并启动服务
+   sudo systemctl daemon-reload
+   sudo systemctl enable netapp
+   sudo systemctl start netapp
+   ```
+
+6. **分享访问地址**
    - 告知用户访问: `http://[你的服务器IP地址]:8080`
    - 或者如果你有域名: `http://your-domain.com:8080`
+   - 如果想使用HTTPS，建议配置Nginx作为反向代理并使用Let's Encrypt免费证书
 
 #### 选项B: 使用Docker容器部署
 
