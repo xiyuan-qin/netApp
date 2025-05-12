@@ -27,6 +27,7 @@ struct UserSession {
     addr: String,  // 客户端IP地址
     session: actix_ws::Session,
     last_heartbeat: Instant,
+    join_time: Instant, // 添加加入时间字段，用于会话管理
 }
 
 // 应用状态
@@ -76,6 +77,7 @@ async fn ws_route(
         addr: client_addr.clone(),
         session: session.clone(),
         last_heartbeat: Instant::now(),
+        join_time: Instant::now(),
     };
     
     // 存储连接前先检查并清理可能存在的同IP陈旧连接
@@ -149,7 +151,7 @@ async fn ws_route(
     }
     
     // 发送当前在线用户列表
-    send_user_list(&app_state, "大厅".to_string()).await;
+    send_user_list(&app_state, "大厅").await;
     
     // 在新线程处理消息
     let app_state_clone = app_state.clone();
@@ -254,7 +256,7 @@ async fn handle_message(msg: Message, user_id: &str, app_state: &Arc<AppState>) 
                                 };
                                 
                                 broadcast_message_to_room(&join_msg, &user_session.room, app_state).await;
-                                send_user_list(&app_state, user_session.room.clone()).await;
+                                send_user_list(&app_state, &user_session.room).await;
                             }
                             
                             current_room = user_session.room.clone();
@@ -308,6 +310,19 @@ async fn handle_message(msg: Message, user_id: &str, app_state: &Arc<AppState>) 
                                 }
                             }
                         },
+                        "ping" => {
+                            // 处理客户端ping请求，直接回复pong消息
+                            let pong_msg = ChatMessage {
+                                msg_type: "pong".to_string(),
+                                username: "服务器".to_string(),
+                                room: "".to_string(),
+                                text: chat_msg.text, // 返回相同的内容，客户端可用于计算延迟
+                                timestamp: chrono::Utc::now().timestamp() as u64,
+                                id: Uuid::new_v4().to_string(),
+                                target: None,
+                            };
+                            send_message_to_user(&pong_msg, user_id, app_state).await;
+                        },
                         "pong" => {
                             // 处理客户端的pong响应
                             let mut sessions = app_state.sessions.lock().unwrap();
@@ -316,65 +331,15 @@ async fn handle_message(msg: Message, user_id: &str, app_state: &Arc<AppState>) 
                             }
                         },
                         "join" => {
-                            // 处理用户加入房间请求
+                            // 处理用户加入/创建房间请求
                             if !chat_msg.room.is_empty() {
                                 let new_room = chat_msg.room.clone();
-                                let mut sessions = app_state.sessions.lock().unwrap();
-                                
-                                if let Some(user_session) = sessions.get_mut(user_id) {
-                                    // 从旧房间移除
-                                    let old_room = user_session.room.clone();
-                                    {
-                                        let mut rooms = app_state.rooms.lock().unwrap();
-                                        if let Some(room_users) = rooms.get_mut(&old_room) {
-                                            room_users.remove(user_id);
-                                        }
-                                    }
-                                    
-                                    // 发送离开消息到旧房间
-                                    let leave_msg = ChatMessage {
-                                        msg_type: "system".to_string(),
-                                        username: "服务器".to_string(),
-                                        room: old_room.clone(),
-                                        text: format!("{} 离开了房间", user_session.username),
-                                        timestamp: chrono::Utc::now().timestamp() as u64,
-                                        id: Uuid::new_v4().to_string(),
-                                        target: None,
-                                    };
-                                    
-                                    broadcast_message_to_room(&leave_msg, &old_room, app_state).await;
-                                    
-                                    // 加入新房间
-                                    user_session.room = new_room.clone();
-                                    {
-                                        let mut rooms = app_state.rooms.lock().unwrap();
-                                        rooms.entry(new_room.clone())
-                                             .or_insert_with(HashSet::new)
-                                             .insert(user_id.to_string());
-                                    }
-                                    
-                                    // 发送加入消息到新房间
-                                    let join_msg = ChatMessage {
-                                        msg_type: "system".to_string(),
-                                        username: "服务器".to_string(),
-                                        room: new_room.clone(),
-                                        text: format!("{} 加入了房间", user_session.username),
-                                        timestamp: chrono::Utc::now().timestamp() as u64,
-                                        id: Uuid::new_v4().to_string(),
-                                        target: None,
-                                    };
-                                    
-                                    broadcast_message_to_room(&join_msg, &new_room, app_state).await;
-                                    
-                                    // 更新两个房间的用户列表
-                                    send_user_list(app_state, old_room).await;
-                                    send_user_list(app_state, new_room).await;
-                                }
+                                join_room(user_id, &new_room, app_state).await;
                             }
                         },
                         "command" => {
                             // 处理命令消息
-                            let response = handle_command(chat_msg.text, user_id, app_state).await;
+                            let response = handle_command(chat_msg.text.clone(), user_id, app_state).await;
                             
                             // 发送命令响应
                             if !response.is_empty() {
@@ -452,6 +417,90 @@ async fn handle_message(msg: Message, user_id: &str, app_state: &Arc<AppState>) 
     }
 }
 
+// 新增加入房间的独立函数，确保创建房间逻辑统一
+async fn join_room(user_id: &str, new_room: &str, app_state: &Arc<AppState>) {
+    let username;
+    let old_room;
+    
+    {
+        let mut sessions = app_state.sessions.lock().unwrap();
+        
+        if let Some(user_session) = sessions.get_mut(user_id) {
+            username = user_session.username.clone();
+            old_room = user_session.room.clone();
+            
+            // 检查是否已经在该房间
+            if old_room == new_room {
+                let already_msg = ChatMessage {
+                    msg_type: "system".to_string(),
+                    username: "服务器".to_string(),
+                    room: old_room.clone(),
+                    text: format!("您已经在房间 {} 中", new_room),
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    id: Uuid::new_v4().to_string(),
+                    target: None,
+                };
+                
+                send_message_to_user(&already_msg, user_id, app_state).await;
+                return;
+            }
+            
+            // 更新用户房间
+            user_session.room = new_room.to_string();
+        } else {
+            return;
+        }
+    }
+    
+    // 从旧房间移除用户
+    {
+        let mut rooms = app_state.rooms.lock().unwrap();
+        if let Some(room_users) = rooms.get_mut(&old_room) {
+            room_users.remove(user_id);
+        }
+    }
+    
+    // 发送离开消息到旧房间
+    let leave_msg = ChatMessage {
+        msg_type: "system".to_string(),
+        username: "服务器".to_string(),
+        room: old_room.clone(),
+        text: format!("{} 离开了房间", username),
+        timestamp: chrono::Utc::now().timestamp() as u64,
+        id: Uuid::new_v4().to_string(),
+        target: None,
+    };
+    
+    broadcast_message_to_room(&leave_msg, &old_room, app_state).await;
+    
+    // 将用户添加到新房间
+    {
+        let mut rooms = app_state.rooms.lock().unwrap();
+        rooms.entry(new_room.to_string())
+             .or_insert_with(HashSet::new)
+             .insert(user_id.to_string());
+    }
+    
+    // 发送加入消息到新房间
+    let join_msg = ChatMessage {
+        msg_type: "system".to_string(),
+        username: "服务器".to_string(),
+        room: new_room.to_string(),
+        text: format!("{} 加入了房间", username),
+        timestamp: chrono::Utc::now().timestamp() as u64,
+        id: Uuid::new_v4().to_string(),
+        target: None,
+    };
+    
+    broadcast_message_to_room(&join_msg, new_room, app_state).await;
+    
+    // 更新两个房间的用户列表
+    send_user_list(app_state, &old_room).await;
+    send_user_list(app_state, new_room).await;
+    
+    log::info!("User {} moved from room {} to room {}", username, old_room, new_room);
+}
+
 // 处理用户断开连接
 async fn handle_disconnect(user_id: &str, app_state: &Arc<AppState>) {
     let username;
@@ -493,7 +542,7 @@ async fn handle_disconnect(user_id: &str, app_state: &Arc<AppState>) {
         broadcast_message_to_room(&leave_msg, &room, app_state).await;
         
         // 更新用户列表
-        send_user_list(app_state, room).await;
+        send_user_list(app_state, &room).await;
     }
     
     log::info!("Connection closed for {} ({})", user_id, username);
@@ -569,14 +618,14 @@ async fn send_message_to_user(message: &ChatMessage, user_id: &str, app_state: &
 }
 
 // 发送用户列表信息
-async fn send_user_list(app_state: &Arc<AppState>, room: String) {
+async fn send_user_list(app_state: &Arc<AppState>, room: &str) {
     let mut user_list = Vec::new();
     
     {
         let sessions = app_state.sessions.lock().unwrap();
         let rooms = app_state.rooms.lock().unwrap();
         
-        if let Some(user_ids) = rooms.get(&room) {
+        if let Some(user_ids) = rooms.get(room) {
             for user_id in user_ids {
                 if let Some(user_session) = sessions.get(user_id) {
                     user_list.push(format!("{}:{}", user_session.username, user_session.addr));
@@ -588,14 +637,14 @@ async fn send_user_list(app_state: &Arc<AppState>, room: String) {
     let user_list_msg = ChatMessage {
         msg_type: "userlist".to_string(),
         username: "服务器".to_string(),
-        room: room.clone(),
+        room: room.to_string(),
         text: user_list.join(","),
         timestamp: chrono::Utc::now().timestamp() as u64,
         id: Uuid::new_v4().to_string(),
         target: None,
     };
     
-    broadcast_message_to_room(&user_list_msg, &room, app_state).await;
+    broadcast_message_to_room(&user_list_msg, room, app_state).await;
 }
 
 // 处理命令
